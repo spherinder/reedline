@@ -26,7 +26,8 @@ impl Hinter for CompletionHinter {
         'blk: {
             if line.chars().count() < self.min_chars || pos != line.len() { break 'blk }
             let Ok(mut completer) = self.completer.lock() else { break 'blk };
-            let Some(first) = completer.complete(line, pos).first() else { break 'blk };
+            let comps = completer.complete(line, pos);
+            let Some(first) = comps.first() else { break 'blk };
 
             let span_end = first.span.end.min(line.len());
             let span_start = first.span.start.min(span_end);
