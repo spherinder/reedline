@@ -1119,6 +1119,27 @@ impl Reedline {
         }
     }
 
+    /// If `always_active_menu` is configured and the buffer is non-empty,
+    /// (re)activate that menu and refresh its values. Used after the buffer
+    /// changes (typing, picking a completion) so the menu keeps popping back
+    /// up automatically.
+    fn reactivate_always_active_menu(&mut self) {
+        let Some(menu_name) = self.always_active_menu.as_deref() else {
+            return;
+        };
+        if self.editor.line_buffer().get_buffer().is_empty() {
+            return;
+        }
+        if let Some(menu) = self.menus.iter_mut().find(|m| m.name() == menu_name) {
+            menu.menu_event(MenuEvent::Activate(self.quick_completions));
+            menu.update_values(
+                &mut self.editor,
+                self.completer.as_mut(),
+                self.history.as_ref(),
+            );
+        }
+    }
+
     fn handle_editor_event(
         &mut self,
         prompt: &dyn Prompt,
@@ -1126,35 +1147,49 @@ impl Reedline {
     ) -> io::Result<EventStatus> {
         match event {
             ReedlineEvent::Menu(name) => {
-                if self.active_menu().is_none() {
-                    if let Some(menu) = self.menus.iter_mut().find(|menu| menu.name() == name) {
-                        menu.menu_event(MenuEvent::Activate(self.quick_completions));
+                // If the requested menu is already active, treat the keypress
+                // as a "select": pick the current highlight (never submits)
+                // and let always_active_menu re-activate so the user can keep
+                // drilling deeper (e.g. selecting a directory then browsing
+                // its contents).
+                if let Some(active) = self.menus.iter_mut().find(|m| m.is_active() && m.name() == name) {
+                    active.replace_in_buffer(&mut self.editor);
+                    active.menu_event(MenuEvent::Deactivate);
+                    self.reactivate_always_active_menu();
+                    return Ok(EventStatus::Handled);
+                }
+                // If a *different* menu is active, deactivate it so the
+                // newly-requested one can take over.
+                if let Some(active) = self.menus.iter_mut().find(|m| m.is_active()) {
+                    active.menu_event(MenuEvent::Deactivate);
+                }
+                if let Some(menu) = self.menus.iter_mut().find(|menu| menu.name() == name) {
+                    menu.menu_event(MenuEvent::Activate(self.quick_completions));
 
-                        if self.quick_completions && menu.can_quick_complete() {
-                            menu.update_values(
-                                &mut self.editor,
-                                self.completer.as_mut(),
-                                self.history.as_ref(),
-                            );
+                    if self.quick_completions && menu.can_quick_complete() {
+                        menu.update_values(
+                            &mut self.editor,
+                            self.completer.as_mut(),
+                            self.history.as_ref(),
+                        );
 
-                            if menu.get_values().len() == 1 {
-                                return self.handle_editor_event(prompt, ReedlineEvent::Enter);
-                            }
+                        if menu.get_values().len() == 1 {
+                            return self.handle_editor_event(prompt, ReedlineEvent::Enter);
                         }
+                    }
 
-                        if self.partial_completions
-                            && menu.can_partially_complete(
-                                self.quick_completions,
-                                &mut self.editor,
-                                self.completer.as_mut(),
-                                self.history.as_ref(),
-                            )
-                        {
-                            return Ok(EventStatus::Handled);
-                        }
-
+                    if self.partial_completions
+                        && menu.can_partially_complete(
+                            self.quick_completions,
+                            &mut self.editor,
+                            self.completer.as_mut(),
+                            self.history.as_ref(),
+                        )
+                    {
                         return Ok(EventStatus::Handled);
                     }
+
+                    return Ok(EventStatus::Handled);
                 }
                 Ok(EventStatus::Inapplicable)
             }
@@ -1288,15 +1323,25 @@ impl Reedline {
             ReedlineEvent::Enter | ReedlineEvent::Submit | ReedlineEvent::SubmitOrNewline
                 if self.menus.iter().any(|menu| menu.is_active()) =>
             {
+                let mut single_entry = false;
                 for menu in self.menus.iter_mut() {
                     if menu.is_active() {
+                        single_entry = menu.get_values().len() == 1;
                         menu.replace_in_buffer(&mut self.editor);
                         menu.menu_event(MenuEvent::Deactivate);
-
-                        return Ok(EventStatus::Handled);
+                        break;
                     }
                 }
-                unreachable!()
+                // When the menu had exactly one entry, treat Enter as
+                // "select and run": recurse into the regular Enter handler
+                // (no menu is active now) to validate and submit.
+                if single_entry {
+                    return self.handle_editor_event(prompt, ReedlineEvent::Enter);
+                }
+                // Otherwise the user is still drilling — keep the menu open
+                // by re-activating always_active_menu against the new buffer.
+                self.reactivate_always_active_menu();
+                Ok(EventStatus::Handled)
             }
             ReedlineEvent::Enter => {
                 #[cfg(feature = "bashisms")]
@@ -1404,16 +1449,8 @@ impl Reedline {
                         MenuEvent::Edit(self.quick_completions)
                     };
                     menu.menu_event(event);
-                } else if let Some(menu_name) = self.always_active_menu.as_deref()
-                    && !self.editor.line_buffer().get_buffer().is_empty()
-                    && let Some(menu) = self.menus.iter_mut().find(|m| m.name() == menu_name)
-                {
-                    menu.menu_event(MenuEvent::Activate(self.quick_completions));
-                    menu.update_values(
-                        &mut self.editor,
-                        self.completer.as_mut(),
-                        self.history.as_ref(),
-                    );
+                } else {
+                    self.reactivate_always_active_menu();
                 }
                 Ok(EventStatus::Handled)
             }
