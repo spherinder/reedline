@@ -1395,53 +1395,43 @@ impl Reedline {
             ReedlineEvent::Edit(commands) => {
                 self.run_edit_commands(&commands);
                 // Check if a space was just inserted and try to expand abbreviations
-                if let Some(EditCommand::InsertChar(' ')) = commands.first() {
-                    if let Some(event) = self.try_expand_abbreviation_at_cursor(false) {
-                        return self.handle_editor_event(prompt, event);
-                    }
+                if let Some(EditCommand::InsertChar(' ')) = commands.first()
+                && let Some(event) = self.try_expand_abbreviation_at_cursor(false) {
+                    return self.handle_editor_event(prompt, event);
                 }
-                if let Some(menu) = self.menus.iter_mut().find(|men| men.is_active()) {
-                    if self.quick_completions && menu.can_quick_complete() {
-                        match commands.first() {
-                            Some(&EditCommand::Backspace)
-                            | Some(&EditCommand::BackspaceWord)
-                            | Some(&EditCommand::MoveToLineStart { select: false }) => {
-                                menu.menu_event(MenuEvent::Deactivate)
-                            }
-                            _ => {
-                                menu.menu_event(MenuEvent::Edit(self.quick_completions));
-                                menu.update_values(
-                                    &mut self.editor,
-                                    self.completer.as_mut(),
-                                    self.history.as_ref(),
-                                );
-                                if let Some(&EditCommand::Complete) = commands.first() {
-                                    if menu.get_values().len() == 1 {
-                                        return self
-                                            .handle_editor_event(prompt, ReedlineEvent::Enter);
-                                    } else if self.partial_completions
-                                        && menu.can_partially_complete(
-                                            self.quick_completions,
-                                            &mut self.editor,
-                                            self.completer.as_mut(),
-                                            self.history.as_ref(),
-                                        )
-                                    {
-                                        return Ok(EventStatus::Handled);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    let event = if self.editor.line_buffer().get_buffer().is_empty() {
-                        MenuEvent::Deactivate
-                    } else {
-                        MenuEvent::Edit(self.quick_completions)
-                    };
-                    menu.menu_event(event);
-                } else {
+                let Some(menu) = self.menus.iter_mut().find(|men| men.is_active()) else {
                     self.reactivate_always_active_menu();
+                    return Ok(EventStatus::Handled)
+                };
+                if self.quick_completions && menu.can_quick_complete() {
+                    // Refresh values on every edit, including backspace. Upstream
+                    // used to skip this for Backspace/BackspaceWord/MoveToLineStart
+                    // (paired with a redundant `Deactivate`) so that backspacing
+                    // dismissed Tab-triggered menus. With `always_active_menu` that
+                    // asymmetry leaves the menu pinned to stale values when
+                    // backspacing — we always refresh now.
+                    menu.menu_event(MenuEvent::Edit(self.quick_completions));
+                    menu.update_values(
+                        &mut self.editor,
+                        self.completer.as_mut(),
+                        self.history.as_ref(),
+                    );
+                    let is_complete = matches!(commands.first(), Some(&EditCommand::Complete));
+                    if is_complete && menu.get_values().len() == 1 {
+                        return self.handle_editor_event(prompt, ReedlineEvent::Enter)
+                    }
+                    if is_complete && self.partial_completions && menu.can_partially_complete(
+                        self.quick_completions, &mut self.editor, self.completer.as_mut(), self.history.as_ref(),
+                    ) {
+                        return Ok(EventStatus::Handled)
+                    }
                 }
+                let event = if self.editor.line_buffer().get_buffer().is_empty() {
+                    MenuEvent::Deactivate
+                } else {
+                    MenuEvent::Edit(self.quick_completions)
+                };
+                menu.menu_event(event);
                 Ok(EventStatus::Handled)
             }
             ReedlineEvent::OpenEditor => self.open_editor().map(|_| EventStatus::Handled),
