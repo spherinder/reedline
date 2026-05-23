@@ -166,7 +166,10 @@ impl EditMode for Vi {
                         // Default Enter behavior when no custom binding
                         if modifiers == KeyModifiers::NONE && code == KeyCode::Enter {
                             self.mode = ViMode::Insert;
-                            ReedlineEvent::Enter
+                            ReedlineEvent::UntilFound(vec![
+                                ReedlineEvent::MenuSelect,
+                                ReedlineEvent::Enter,
+                            ])
                         } else {
                             ReedlineEvent::None
                         }
@@ -177,7 +180,10 @@ impl EditMode for Vi {
                     .unwrap_or_else(|| {
                         // Default Enter behavior when no custom binding
                         if modifiers == KeyModifiers::NONE && code == KeyCode::Enter {
-                            ReedlineEvent::Enter
+                            ReedlineEvent::UntilFound(vec![
+                                ReedlineEvent::MenuSelect,
+                                ReedlineEvent::Enter,
+                            ])
                         } else {
                             ReedlineEvent::None
                         }

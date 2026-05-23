@@ -944,6 +944,12 @@ pub enum ReedlineEvent {
     /// Trigger a menu event. It activates a menu with the event name
     Menu(String),
 
+    /// Pick the highlighted entry from whichever menu is currently active and
+    /// insert it into the buffer. Reports [`EventStatus::Inapplicable`] when
+    /// no menu is active, so it composes nicely inside [`ReedlineEvent::UntilFound`]
+    /// (e.g. `UntilFound([MenuSelect, Submit])` for "pick if menu open, else submit").
+    MenuSelect,
+
     /// Next element in the menu
     MenuNext,
 
@@ -1026,6 +1032,7 @@ impl Display for ReedlineEvent {
             ReedlineEvent::Multiple(_) => write!(f, "Multiple[ {{ ReedLineEvents, }} ]"),
             ReedlineEvent::UntilFound(_) => write!(f, "UntilFound [ {{ ReedLineEvents, }} ]"),
             ReedlineEvent::Menu(_) => write!(f, "Menu Name: <string>"),
+            ReedlineEvent::MenuSelect => write!(f, "MenuSelect"),
             ReedlineEvent::MenuNext => write!(f, "MenuNext"),
             ReedlineEvent::MenuPrevious => write!(f, "MenuPrevious"),
             ReedlineEvent::MenuUp => write!(f, "MenuUp"),

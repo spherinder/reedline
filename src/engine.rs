@@ -1107,6 +1107,7 @@ impl Reedline {
             | ReedlineEvent::HistoryHintWordComplete
             | ReedlineEvent::OpenEditor
             | ReedlineEvent::Menu(_)
+            | ReedlineEvent::MenuSelect
             | ReedlineEvent::MenuNext
             | ReedlineEvent::MenuPrevious
             | ReedlineEvent::MenuUp
@@ -1147,20 +1148,12 @@ impl Reedline {
     ) -> io::Result<EventStatus> {
         match event {
             ReedlineEvent::Menu(name) => {
-                // If the requested menu is already active, treat the keypress
-                // as a "select": pick the current highlight (never submits)
-                // and let always_active_menu re-activate so the user can keep
-                // drilling deeper (e.g. selecting a directory then browsing
-                // its contents).
-                if let Some(active) = self.menus.iter_mut().find(|m| m.is_active() && m.name() == name) {
-                    active.replace_in_buffer(&mut self.editor);
-                    active.menu_event(MenuEvent::Deactivate);
-                    self.reactivate_always_active_menu();
-                    return Ok(EventStatus::Handled);
-                }
-                // If a *different* menu is active, deactivate it so the
-                // newly-requested one can take over.
-                if let Some(active) = self.menus.iter_mut().find(|m| m.is_active()) {
+                // Activate (or switch to) the named menu. Picking entries is the
+                // job of `ReedlineEvent::MenuSelect`, not this event, so that
+                // selection composes cleanly via `UntilFound`.
+                if let Some(active) = self.menus.iter_mut().find(|m| m.is_active())
+                    && active.name() != name
+                {
                     active.menu_event(MenuEvent::Deactivate);
                 }
                 if let Some(menu) = self.menus.iter_mut().find(|menu| menu.name() == name) {
@@ -1174,7 +1167,7 @@ impl Reedline {
                         );
 
                         if menu.get_values().len() == 1 {
-                            return self.handle_editor_event(prompt, ReedlineEvent::Enter);
+                            return self.handle_editor_event(prompt, ReedlineEvent::MenuSelect);
                         }
                     }
 
@@ -1193,10 +1186,22 @@ impl Reedline {
                 }
                 Ok(EventStatus::Inapplicable)
             }
+            ReedlineEvent::MenuSelect => {
+                let Some(menu) = self.menus.iter_mut().find(|m| m.is_active()) else {
+                    return Ok(EventStatus::Inapplicable);
+                };
+                menu.replace_in_buffer(&mut self.editor);
+                menu.menu_event(MenuEvent::Deactivate);
+                // If always_active_menu is set, the user expects the menu to
+                // immediately re-appear so they can keep drilling (e.g. browse
+                // the directory they just picked).
+                self.reactivate_always_active_menu();
+                Ok(EventStatus::Handled)
+            }
             ReedlineEvent::MenuNext => {
                 if let Some(menu) = self.menus.iter_mut().find(|menu| menu.is_active()) {
                     if menu.get_values().len() == 1 && menu.can_quick_complete() {
-                        self.handle_editor_event(prompt, ReedlineEvent::Enter)
+                        self.handle_editor_event(prompt, ReedlineEvent::MenuSelect)
                     } else {
                         if self.partial_completions {
                             menu.can_partially_complete(
@@ -1318,13 +1323,6 @@ impl Reedline {
             ReedlineEvent::ClearScrollback => {
                 self.deactivate_menus();
                 self.painter.clear_scrollback()?;
-                Ok(EventStatus::Handled)
-            }
-            ReedlineEvent::Enter | ReedlineEvent::Submit | ReedlineEvent::SubmitOrNewline
-                if let Some(menu) = self.menus.iter_mut().find(|m| m.is_active()) =>
-            {
-                menu.replace_in_buffer(&mut self.editor);
-                menu.menu_event(MenuEvent::Deactivate);
                 Ok(EventStatus::Handled)
             }
             ReedlineEvent::Enter => {

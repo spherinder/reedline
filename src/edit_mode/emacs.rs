@@ -23,8 +23,15 @@ pub fn default_emacs_keybindings() -> Keybindings {
     add_common_edit_bindings(&mut kb);
     add_common_selection_bindings(&mut kb);
 
-    // This could be in common, but in Vi it also changes the mode
-    kb.add_binding(KM::NONE, KC::Enter, ReedlineEvent::Enter);
+    // This could be in common, but in Vi it also changes the mode.
+    // Preserves the historical "Enter picks from the active menu, otherwise
+    // submits" behavior — the engine used to bake this into the Enter handler,
+    // but it now composes via `UntilFound` so users can override it.
+    kb.add_binding(
+        KM::NONE,
+        KC::Enter,
+        ReedlineEvent::UntilFound(vec![ReedlineEvent::MenuSelect, ReedlineEvent::Enter]),
+    );
 
     // *** CTRL ***
     // Moves
