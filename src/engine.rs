@@ -174,8 +174,9 @@ pub struct Reedline {
     hinter: Option<Box<dyn Hinter>>,
     hide_hints: bool,
 
-    // Auto-show completion menu as you type (IDE/fish style)
-    auto_complete_menu: bool,
+    // Name of a menu to keep active while the buffer is non-empty, so it pops up
+    // automatically as the user types. `None` disables the behavior.
+    always_active_menu: Option<String>,
 
     // Use ansi coloring or not
     use_ansi_coloring: bool,
@@ -287,7 +288,7 @@ impl Reedline {
             visual_selection_style,
             hinter,
             hide_hints: false,
-            auto_complete_menu: false,
+            always_active_menu: None,
             validator,
             use_ansi_coloring: true,
             mouse_click_mode: MouseClickMode::default(),
@@ -387,13 +388,13 @@ impl Reedline {
         self
     }
 
-    /// Enable auto-showing completion menu as you type (IDE/fish style)
+    /// Keep the menu with the given name active while the buffer is non-empty,
+    /// so it pops up automatically as the user types instead of requiring Tab.
     ///
-    /// When enabled, the completion menu named "completion_menu" will automatically
-    /// appear as you type, without needing to press Tab.
+    /// Passing `None` (the default) disables this behavior.
     #[must_use]
-    pub fn with_auto_complete_menu(mut self, enable: bool) -> Self {
-        self.auto_complete_menu = enable;
+    pub fn with_always_active_menu(mut self, menu_name: Option<String>) -> Self {
+        self.always_active_menu = menu_name;
         self
     }
 
@@ -1397,20 +1398,22 @@ impl Reedline {
                             }
                         }
                     }
-                    // Check if we should keep the menu active
-                    let buffer = self.editor.line_buffer().get_buffer();
-                    let is_typing = !buffer.is_empty() && !buffer.ends_with(' ');
-                    let should_stay_active = if self.auto_complete_menu { is_typing } else { !buffer.is_empty() };
-                    let event = if should_stay_active { MenuEvent::Edit(self.quick_completions) } else { MenuEvent::Deactivate };
+                    let event = if self.editor.line_buffer().get_buffer().is_empty() {
+                        MenuEvent::Deactivate
+                    } else {
+                        MenuEvent::Edit(self.quick_completions)
+                    };
                     menu.menu_event(event);
-                } else if self.auto_complete_menu {
-                    let buffer = self.editor.line_buffer().get_buffer();
-                    let should_show = buffer.contains(' ') && !buffer.ends_with(' ');
-                    if should_show && let Some(menu) = self.menus.iter_mut().find(|m| m.name() == "completion_menu") {
-                        // We know menu.is_active() is false because we are in the outer `else` block
-                        menu.menu_event(MenuEvent::Activate(self.quick_completions));
-                        menu.update_values(&mut self.editor, self.completer.as_mut(), self.history.as_ref());
-                    }
+                } else if let Some(menu_name) = self.always_active_menu.as_deref()
+                    && !self.editor.line_buffer().get_buffer().is_empty()
+                    && let Some(menu) = self.menus.iter_mut().find(|m| m.name() == menu_name)
+                {
+                    menu.menu_event(MenuEvent::Activate(self.quick_completions));
+                    menu.update_values(
+                        &mut self.editor,
+                        self.completer.as_mut(),
+                        self.history.as_ref(),
+                    );
                 }
                 Ok(EventStatus::Handled)
             }
