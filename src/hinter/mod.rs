@@ -1,7 +1,5 @@
-mod completion;
 mod cwd_aware;
 mod default;
-pub use completion::CompletionHinter;
 pub use cwd_aware::CwdAwareHinter;
 pub use default::DefaultHinter;
 
