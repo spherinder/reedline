@@ -1321,17 +1321,11 @@ impl Reedline {
                 Ok(EventStatus::Handled)
             }
             ReedlineEvent::Enter | ReedlineEvent::Submit | ReedlineEvent::SubmitOrNewline
-                if self.menus.iter().any(|menu| menu.is_active()) =>
+                if let Some(menu) = self.menus.iter_mut().find(|m| m.is_active()) =>
             {
-                let mut single_entry = false;
-                for menu in self.menus.iter_mut() {
-                    if menu.is_active() {
-                        single_entry = menu.get_values().len() == 1;
-                        menu.replace_in_buffer(&mut self.editor);
-                        menu.menu_event(MenuEvent::Deactivate);
-                        break;
-                    }
-                }
+                let single_entry = menu.get_values().len() == 1;
+                menu.replace_in_buffer(&mut self.editor);
+                menu.menu_event(MenuEvent::Deactivate);
                 // When the menu had exactly one entry, treat Enter as
                 // "select and run": recurse into the regular Enter handler
                 // (no menu is active now) to validate and submit.
