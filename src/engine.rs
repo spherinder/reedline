@@ -1323,22 +1323,8 @@ impl Reedline {
             ReedlineEvent::Enter | ReedlineEvent::Submit | ReedlineEvent::SubmitOrNewline
                 if let Some(menu) = self.menus.iter_mut().find(|m| m.is_active()) =>
             {
-                let entries = menu.get_values().len();
-                if entries != 0 {
-                    menu.replace_in_buffer(&mut self.editor);
-                }
+                menu.replace_in_buffer(&mut self.editor);
                 menu.menu_event(MenuEvent::Deactivate);
-                // Fall through to the regular Enter handler (which validates
-                // and submits) when there's nothing left to drill into:
-                //   - 0 entries: menu shows "NO RECORDS FOUND", user wants to
-                //     just run the buffer as-is.
-                //   - 1 entry: we already picked it; "select and run".
-                if entries <= 1 {
-                    return self.handle_editor_event(prompt, ReedlineEvent::Enter);
-                }
-                // Multiple entries: user is still drilling — keep the menu open
-                // by re-activating always_active_menu against the new buffer.
-                self.reactivate_always_active_menu();
                 Ok(EventStatus::Handled)
             }
             ReedlineEvent::Enter => {
