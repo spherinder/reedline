@@ -2282,6 +2282,11 @@ impl Reedline {
     fn submit_buffer(&mut self, prompt: &dyn Prompt) -> io::Result<EventStatus> {
         let buffer = self.editor.get_buffer().to_string();
         self.hide_hints = true;
+        // Tear down any active menu before the final repaint so its rendered
+        // lines are erased — otherwise (notably with `always_active_menu`) the
+        // menu stays drawn below the prompt and the command's stdout overprints
+        // it, producing garbled output like "hiome/spherinder/...".
+        self.deactivate_menus();
         // Additional repaint to show the content without hints etc.
         if let Some(transient_prompt) = self.transient_prompt.take() {
             self.repaint(transient_prompt.as_ref())?;
