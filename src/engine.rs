@@ -178,6 +178,10 @@ pub struct Reedline {
     // automatically as the user types. `None` disables the behavior.
     always_active_menu: Option<String>,
 
+    // Minimum buffer length (in chars) before `always_active_menu` will auto-show.
+    // Explicit menu keybindings ignore this; it only gates the implicit re-activation.
+    always_active_menu_min_chars: usize,
+
     // Use ansi coloring or not
     use_ansi_coloring: bool,
 
@@ -289,6 +293,7 @@ impl Reedline {
             hinter,
             hide_hints: false,
             always_active_menu: None,
+            always_active_menu_min_chars: 1,
             validator,
             use_ansi_coloring: true,
             mouse_click_mode: MouseClickMode::default(),
@@ -395,6 +400,15 @@ impl Reedline {
     #[must_use]
     pub fn with_always_active_menu(mut self, menu_name: Option<String>) -> Self {
         self.always_active_menu = menu_name;
+        self
+    }
+
+    /// Set the minimum number of buffer characters required before
+    /// [`Reedline::with_always_active_menu`] auto-shows the menu. Defaults to
+    /// `1`. Has no effect on menus opened by an explicit keybinding.
+    #[must_use]
+    pub fn with_always_active_menu_min_chars(mut self, min_chars: usize) -> Self {
+        self.always_active_menu_min_chars = min_chars;
         self
     }
 
@@ -1120,15 +1134,17 @@ impl Reedline {
         }
     }
 
-    /// If `always_active_menu` is configured and the buffer is non-empty,
-    /// (re)activate that menu and refresh its values. Used after the buffer
-    /// changes (typing, picking a completion) so the menu keeps popping back
-    /// up automatically.
+    /// If `always_active_menu` is configured and the buffer has reached the
+    /// `always_active_menu_min_chars` threshold, (re)activate that menu and
+    /// refresh its values. Used after the buffer changes (typing, picking a
+    /// completion) so the menu keeps popping back up automatically.
     fn reactivate_always_active_menu(&mut self) {
         let Some(menu_name) = self.always_active_menu.as_deref() else {
             return;
         };
-        if self.editor.line_buffer().get_buffer().is_empty() {
+        if self.editor.line_buffer().get_buffer().chars().count()
+            < self.always_active_menu_min_chars
+        {
             return;
         }
         if let Some(menu) = self.menus.iter_mut().find(|m| m.name() == menu_name) {
