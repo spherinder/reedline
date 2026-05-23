@@ -1156,39 +1156,31 @@ impl Reedline {
                 {
                     active.menu_event(MenuEvent::Deactivate);
                 }
-                if let Some(menu) = self.menus.iter_mut().find(|menu| menu.name() == name) {
-                    menu.menu_event(MenuEvent::Activate(self.quick_completions));
-
-                    if self.quick_completions && menu.can_quick_complete() {
-                        menu.update_values(
-                            &mut self.editor,
-                            self.completer.as_mut(),
-                            self.history.as_ref(),
-                        );
-
-                        if menu.get_values().len() == 1 {
-                            return self.handle_editor_event(prompt, ReedlineEvent::MenuSelect);
-                        }
+                let Some(menu) = self.menus.iter_mut().find(|menu| menu.name() == name) else {
+                    return Ok(EventStatus::Inapplicable)
+                };
+                menu.menu_event(MenuEvent::Activate(self.quick_completions));
+                if self.quick_completions && menu.can_quick_complete() {
+                    menu.update_values(
+                        &mut self.editor, self.completer.as_mut(), self.history.as_ref(),
+                    );
+                    if menu.get_values().len() == 1 {
+                        return self.handle_editor_event(prompt, ReedlineEvent::MenuSelect);
                     }
-
-                    if self.partial_completions
-                        && menu.can_partially_complete(
-                            self.quick_completions,
-                            &mut self.editor,
-                            self.completer.as_mut(),
-                            self.history.as_ref(),
-                        )
-                    {
-                        return Ok(EventStatus::Handled);
-                    }
-
-                    return Ok(EventStatus::Handled);
                 }
-                Ok(EventStatus::Inapplicable)
+                if self.partial_completions {
+                    menu.can_partially_complete(
+                        self.quick_completions,
+                        &mut self.editor,
+                        self.completer.as_mut(),
+                        self.history.as_ref(),
+                    );
+                }
+                Ok(EventStatus::Handled)
             }
             ReedlineEvent::MenuSelect => {
                 let Some(menu) = self.menus.iter_mut().find(|m| m.is_active()) else {
-                    return Ok(EventStatus::Inapplicable);
+                    return Ok(EventStatus::Inapplicable)
                 };
                 menu.replace_in_buffer(&mut self.editor);
                 menu.menu_event(MenuEvent::Deactivate);
