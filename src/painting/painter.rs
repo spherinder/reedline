@@ -771,12 +771,14 @@ impl Painter {
         self.stdout
             .queue(Print(&lines.before_cursor))?
             .queue(SavePosition)?
-            .queue(Print(&lines.after_cursor))?;
+            .queue(Print(&lines.after_cursor))?
+            // Ghost text sits on/after the cursor row; `print_menu` repositions
+            // to `menu_start_row` and clears below, so any hint rows that would
+            // overlap the menu are erased naturally.
+            .queue(Print(&lines.hint))?;
 
         if let Some(menu) = menu {
             self.print_menu(menu, use_ansi_coloring, layout)?;
-        } else {
-            self.stdout.queue(Print(&lines.hint))?;
         }
 
         Ok(())
@@ -861,6 +863,10 @@ impl Painter {
             } else {
                 self.stdout.queue(Print(&lines.after_cursor))?;
             }
+            // Same single-line truncation as after_cursor: keep the inline
+            // ghost text but don't push the menu further down.
+            let hint_inline = lines.hint.split_once('\n').map_or(&*lines.hint, |(h, _)| h);
+            self.stdout.queue(Print(hint_inline))?;
             self.print_menu(menu, use_ansi_coloring, layout)?;
         } else {
             // Selecting lines for the hint
