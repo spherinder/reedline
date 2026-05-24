@@ -1140,12 +1140,11 @@ impl Reedline {
     /// completion) so the menu keeps popping back up automatically.
     fn reactivate_always_active_menu(&mut self) {
         let Some(menu_name) = self.always_active_menu.as_deref() else {
-            return;
+            return
         };
-        if self.editor.line_buffer().get_buffer().chars().count()
-            < self.always_active_menu_min_chars
-        {
-            return;
+        let min_char = self.always_active_menu_min_chars.saturating_sub(1);
+        if self.editor.line_buffer().get_buffer().chars().nth(min_char).is_none() {
+            return
         }
         if let Some(menu) = self.menus.iter_mut().find(|m| m.name() == menu_name) {
             menu.menu_event(MenuEvent::Activate(self.quick_completions));
@@ -1404,12 +1403,18 @@ impl Reedline {
                     return Ok(EventStatus::Handled)
                 };
                 if self.quick_completions && menu.can_quick_complete() {
-                    // Refresh values on every edit, including backspace. Upstream
-                    // used to skip this for Backspace/BackspaceWord/MoveToLineStart
-                    // (paired with a redundant `Deactivate`) so that backspacing
-                    // dismissed Tab-triggered menus. With `always_active_menu` that
-                    // asymmetry leaves the menu pinned to stale values when
-                    // backspacing — we always refresh now.
+                    // Dismiss Tab-triggered quick menus on deletion edits, preserving upstream
+                    // behavior. When `always_active_menu` is set the user expects the menu to
+                    // stay pinned and refresh, so we skip the dismissal.
+                    let is_delete = matches!(commands.first(), Some(
+                        &EditCommand::Backspace
+                        | &EditCommand::BackspaceWord
+                        | &EditCommand::MoveToLineStart { select: false }
+                    ));
+                    if is_delete && self.always_active_menu.is_none() {
+                        menu.menu_event(MenuEvent::Deactivate);
+                        return Ok(EventStatus::Handled)
+                    }
                     menu.menu_event(MenuEvent::Edit(self.quick_completions));
                     menu.update_values(
                         &mut self.editor,
@@ -1418,7 +1423,7 @@ impl Reedline {
                     );
                     let is_complete = matches!(commands.first(), Some(&EditCommand::Complete));
                     if is_complete && menu.get_values().len() == 1 {
-                        return self.handle_editor_event(prompt, ReedlineEvent::Enter)
+                        return self.handle_editor_event(prompt, ReedlineEvent::MenuSelect)
                     }
                     if is_complete && self.partial_completions && menu.can_partially_complete(
                         self.quick_completions, &mut self.editor, self.completer.as_mut(), self.history.as_ref(),
