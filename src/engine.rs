@@ -1149,7 +1149,10 @@ impl Reedline {
     /// preview, `is_active() == false`), or `None` if no ghost should appear.
     /// Conditions: `always_active_menu` is set, no menu is active, the buffer
     /// meets `always_active_menu_min_chars`, and we're not mid-submit.
-    fn ghost_menu_name(&self) -> Option<&str> {
+    fn ghost_menu(&self) -> Option<&str> {
+        // TODO this should partially borrow
+        // `&<submitting, menus, always_active_menu, always_active_menu_min_chars, editor> Reedline`
+        // using the wdanilo/borrow crate
         if self.submitting { return None }
         let name = self.always_active_menu.as_deref()?;
         if self.menus.iter().any(|m| m.is_active()) { return None }
@@ -1166,23 +1169,22 @@ impl Reedline {
     /// buffer. Does NOT activate the menu — it stays `is_active() == false`, so
     /// Enter still submits and the prompt indicator is unchanged.
     fn refresh_ghost_menu(&mut self) {
-        let Some(name) = self.ghost_menu_name().map(str::to_owned) else {
-            return
-        };
-        if let Some(menu) = self.menus.iter_mut().find(|m| m.name() == name) {
-            menu.update_values(
-                &mut self.editor,
-                self.completer.as_mut(),
-                self.history.as_ref(),
-            );
-            // Queue an Edit event so the painter's `update_working_details`
-            // pass computes the menu's layout (column widths, cursor offset,
-            // row count). Without an event, working_details stay at their
-            // defaults and the menu renders as a column of "..." placeholders.
-            // `updated = true` tells the menu's event handler not to redo
-            // `update_values` (we just did). Edit does not touch `is_active`.
-            menu.menu_event(MenuEvent::Edit(true));
-        }
+        // TODO this should partially borrow `&<mut menus, *> Reedline`
+        // using wdanilo/borrow – then we don't need `str::to_owned`.
+        let Some(name) = self.ghost_menu().map(str::to_owned) else { return };
+        let Some(menu) = self.menus.iter_mut().find(|m| m.name() == name) else { return };
+        menu.update_values(
+            &mut self.editor,
+            self.completer.as_mut(),
+            self.history.as_ref(),
+        );
+        // Queue an Edit event so the painter's `update_working_details`
+        // pass computes the menu's layout (column widths, cursor offset,
+        // row count). Without an event, working_details stay at their
+        // defaults and the menu renders as a column of "..." placeholders.
+        // `updated = true` tells the menu's event handler not to redo
+        // `update_values` (we just did). Edit does not touch `is_active`.
+        menu.menu_event(MenuEvent::Edit(true));
     }
 
     fn handle_editor_event(
@@ -1431,41 +1433,43 @@ impl Reedline {
                 && let Some(event) = self.try_expand_abbreviation_at_cursor(false) {
                     return self.handle_editor_event(prompt, event);
                 }
-                if let Some(menu) = self.menus.iter_mut().find(|men| men.is_active()) {
-                    let is_delete = matches!(commands.first(), Some(
-                        &EditCommand::Backspace
-                        | &EditCommand::BackspaceWord
-                        | &EditCommand::MoveToLineStart { select: false }
-                    ));
-                    let quick = self.quick_completions && menu.can_quick_complete();
-                    if quick && !is_delete {
-                        menu.menu_event(MenuEvent::Edit(self.quick_completions));
-                        menu.update_values(
-                            &mut self.editor,
-                            self.completer.as_mut(),
-                            self.history.as_ref(),
-                        );
-                        let is_complete = matches!(commands.first(), Some(&EditCommand::Complete));
-                        if is_complete && menu.get_values().len() == 1 {
-                            return self.handle_editor_event(prompt, ReedlineEvent::MenuSelect)
-                        }
-                        if is_complete && self.partial_completions && menu.can_partially_complete(
-                            self.quick_completions, &mut self.editor, self.completer.as_mut(), self.history.as_ref(),
-                        ) {
-                            return Ok(EventStatus::Handled)
-                        }
+                let Some(menu) = self.menus.iter_mut().find(|men| men.is_active()) else {
+                    self.refresh_ghost_menu();
+                    return Ok(EventStatus::Handled)
+                };
+                let is_delete = matches!(commands.first(), Some(
+                    &EditCommand::Backspace
+                    | &EditCommand::BackspaceWord
+                    | &EditCommand::MoveToLineStart { select: false }
+                ));
+                let quick = self.quick_completions && menu.can_quick_complete();
+                if quick && !is_delete {
+                    menu.menu_event(MenuEvent::Edit(self.quick_completions));
+                    menu.update_values(
+                        &mut self.editor,
+                        self.completer.as_mut(),
+                        self.history.as_ref(),
+                    );
+                    let is_complete = matches!(commands.first(), Some(&EditCommand::Complete));
+                    if is_complete && menu.get_values().len() == 1 {
+                        return self.handle_editor_event(prompt, ReedlineEvent::MenuSelect)
                     }
-                    // Deactivate on quick-complete delete (upstream behavior) or
-                    // when the buffer empties out. Otherwise let the menu refresh.
-                    // If we end up Deactivate'd, the ghost refresh below makes the
-                    // menu visually persist for the next paint cycle.
-                    let event = if self.editor.line_buffer().get_buffer().is_empty() || (quick && is_delete) {
-                        MenuEvent::Deactivate
-                    } else {
-                        MenuEvent::Edit(self.quick_completions)
-                    };
-                    menu.menu_event(event);
+                    if is_complete && self.partial_completions && menu.can_partially_complete(
+                        self.quick_completions, &mut self.editor, self.completer.as_mut(), self.history.as_ref(),
+                    ) {
+                        return Ok(EventStatus::Handled)
+                    }
                 }
+                // Deactivate on quick-complete delete (upstream behavior) or
+                // when the buffer empties out. Otherwise let the menu refresh.
+                // If we end up Deactivate'd, the ghost refresh below makes the
+                // menu visually persist for the next paint cycle.
+                let event = if self.editor.line_buffer().get_buffer().is_empty() || (quick && is_delete) {
+                    MenuEvent::Deactivate
+                } else {
+                    MenuEvent::Edit(self.quick_completions)
+                };
+                menu.menu_event(event);
                 self.refresh_ghost_menu();
                 Ok(EventStatus::Handled)
             }
@@ -2175,12 +2179,9 @@ impl Reedline {
 
         // Updating the working details of the active menu, or of the ghost
         // menu (always_active_menu) when no menu is active.
-        let ghost_name = self.ghost_menu_name().map(str::to_owned);
+        let ghost_name = self.ghost_menu().map(str::to_owned);
         for menu in self.menus.iter_mut() {
-            let is_ghost = ghost_name.as_deref() == Some(menu.name());
-            if !menu.is_active() && !is_ghost {
-                continue;
-            }
+            if !menu.is_active() && ghost_name.as_deref() != Some(menu.name()) { continue }
             if menu.is_active() {
                 // The prompt's `|` indicator only appears for a truly active
                 // menu; the ghost leaves the prompt unchanged.
