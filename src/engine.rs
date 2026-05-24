@@ -1142,8 +1142,10 @@ impl Reedline {
         let Some(menu_name) = self.always_active_menu.as_deref() else {
             return
         };
-        let min_char = self.always_active_menu_min_chars.saturating_sub(1);
-        if self.editor.line_buffer().get_buffer().chars().nth(min_char).is_none() {
+        // min_chars=0 → always (re)activate, even on an empty buffer.
+        // min_chars=N → bail unless the buffer has ≥N chars. nth(N-1) is O(N),
+        let min_chars = self.always_active_menu_min_chars;
+        if min_chars > 0 && self.editor.line_buffer().get_buffer().chars().nth(min_chars-1).is_none() {
             return
         }
         if let Some(menu) = self.menus.iter_mut().find(|m| m.name() == menu_name) {
