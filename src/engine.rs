@@ -174,13 +174,20 @@ pub struct Reedline {
     hinter: Option<Box<dyn Hinter>>,
     hide_hints: bool,
 
-    // Name of a menu to keep active while the buffer is non-empty, so it pops up
-    // automatically as the user types. `None` disables the behavior.
+    // Name of a menu to render as a passive "ghost" while no menu is open, so it
+    // appears automatically as the user types. The menu stays `is_active() == false`
+    // in this state — Enter still submits, the prompt indicator stays unchanged, and
+    // `MenuSelect` reports `Inapplicable`. Tab (or any `ReedlineEvent::Menu(...)`)
+    // promotes the ghost to the normal active state. `None` disables the behavior.
     always_active_menu: Option<String>,
 
-    // Minimum buffer length (in chars) before `always_active_menu` will auto-show.
-    // Explicit menu keybindings ignore this; it only gates the implicit re-activation.
+    // Minimum buffer length (in chars) before the ghost menu is rendered.
+    // Explicit menu keybindings ignore this; it only gates ghost rendering.
     always_active_menu_min_chars: usize,
+
+    // Suppresses ghost rendering during the final submit paint, so the menu's
+    // rendered rows are erased before command stdout starts printing.
+    submitting: bool,
 
     // Use ansi coloring or not
     use_ansi_coloring: bool,
@@ -294,6 +301,7 @@ impl Reedline {
             hide_hints: false,
             always_active_menu: None,
             always_active_menu_min_chars: 1,
+            submitting: false,
             validator,
             use_ansi_coloring: true,
             mouse_click_mode: MouseClickMode::default(),
@@ -393,8 +401,11 @@ impl Reedline {
         self
     }
 
-    /// Keep the menu with the given name active while the buffer is non-empty,
-    /// so it pops up automatically as the user types instead of requiring Tab.
+    /// Render the menu with the given name as a passive "ghost" while no menu
+    /// is open, so it appears automatically as the user types. The menu stays
+    /// inactive in this state: Enter submits, the prompt indicator is unchanged,
+    /// and `MenuSelect` is a no-op. Tab (or any `ReedlineEvent::Menu(...)`)
+    /// promotes the ghost into the normal active state.
     ///
     /// Passing `None` (the default) disables this behavior.
     #[must_use]
@@ -403,9 +414,9 @@ impl Reedline {
         self
     }
 
-    /// Set the minimum number of buffer characters required before
-    /// [`Reedline::with_always_active_menu`] auto-shows the menu. Defaults to
-    /// `1`. Has no effect on menus opened by an explicit keybinding.
+    /// Set the minimum number of buffer characters required before the ghost
+    /// menu configured by [`Reedline::with_always_active_menu`] is rendered.
+    /// Defaults to `1`. Has no effect on menus opened by an explicit keybinding.
     #[must_use]
     pub fn with_always_active_menu_min_chars(mut self, min_chars: usize) -> Self {
         self.always_active_menu_min_chars = min_chars;
@@ -1134,27 +1145,43 @@ impl Reedline {
         }
     }
 
-    /// If `always_active_menu` is configured and the buffer has reached the
-    /// `always_active_menu_min_chars` threshold, (re)activate that menu and
-    /// refresh its values. Used after the buffer changes (typing, picking a
-    /// completion) so the menu keeps popping back up automatically.
-    fn reactivate_always_active_menu(&mut self) {
-        let Some(menu_name) = self.always_active_menu.as_deref() else {
+    /// Name of the menu that should currently render as a ghost (passive
+    /// preview, `is_active() == false`), or `None` if no ghost should appear.
+    /// Conditions: `always_active_menu` is set, no menu is active, the buffer
+    /// meets `always_active_menu_min_chars`, and we're not mid-submit.
+    fn ghost_menu_name(&self) -> Option<&str> {
+        if self.submitting { return None }
+        let name = self.always_active_menu.as_deref()?;
+        if self.menus.iter().any(|m| m.is_active()) { return None }
+        // min_chars=0 → always show. min_chars=N → buffer needs ≥N chars.
+        // `nth(N-1)` is O(N), avoiding a full UTF-8 char count of a long buffer.
+        let min_chars = self.always_active_menu_min_chars;
+        if min_chars > 0 {
+            self.editor.line_buffer().get_buffer().chars().nth(min_chars - 1)?;
+        }
+        Some(name)
+    }
+
+    /// Refresh the ghost menu's values so the next paint reflects the current
+    /// buffer. Does NOT activate the menu — it stays `is_active() == false`, so
+    /// Enter still submits and the prompt indicator is unchanged.
+    fn refresh_ghost_menu(&mut self) {
+        let Some(name) = self.ghost_menu_name().map(str::to_owned) else {
             return
         };
-        // min_chars=0 → always (re)activate, even on an empty buffer.
-        // min_chars=N → bail unless the buffer has ≥N chars. nth(N-1) is O(N),
-        let min_chars = self.always_active_menu_min_chars;
-        if min_chars > 0 && self.editor.line_buffer().get_buffer().chars().nth(min_chars-1).is_none() {
-            return
-        }
-        if let Some(menu) = self.menus.iter_mut().find(|m| m.name() == menu_name) {
-            menu.menu_event(MenuEvent::Activate(self.quick_completions));
+        if let Some(menu) = self.menus.iter_mut().find(|m| m.name() == name) {
             menu.update_values(
                 &mut self.editor,
                 self.completer.as_mut(),
                 self.history.as_ref(),
             );
+            // Queue an Edit event so the painter's `update_working_details`
+            // pass computes the menu's layout (column widths, cursor offset,
+            // row count). Without an event, working_details stay at their
+            // defaults and the menu renders as a column of "..." placeholders.
+            // `updated = true` tells the menu's event handler not to redo
+            // `update_values` (we just did). Edit does not touch `is_active`.
+            menu.menu_event(MenuEvent::Edit(true));
         }
     }
 
@@ -1165,35 +1192,37 @@ impl Reedline {
     ) -> io::Result<EventStatus> {
         match event {
             ReedlineEvent::Menu(name) => {
-                // Activate (or switch to) the named menu. Picking entries is the
-                // job of `ReedlineEvent::MenuSelect`, not this event, so that
-                // selection composes cleanly via `UntilFound`.
-                if let Some(active) = self.menus.iter_mut().find(|m| m.is_active())
-                    && active.name() != name
-                {
-                    active.menu_event(MenuEvent::Deactivate);
-                }
-                let Some(menu) = self.menus.iter_mut().find(|menu| menu.name() == name) else {
-                    return Ok(EventStatus::Inapplicable)
-                };
-                menu.menu_event(MenuEvent::Activate(self.quick_completions));
-                if self.quick_completions && menu.can_quick_complete() {
-                    menu.update_values(
-                        &mut self.editor, self.completer.as_mut(), self.history.as_ref(),
-                    );
-                    if menu.get_values().len() == 1 {
-                        return self.handle_editor_event(prompt, ReedlineEvent::MenuSelect);
+                if self.active_menu().is_none() {
+                    if let Some(menu) = self.menus.iter_mut().find(|menu| menu.name() == name) {
+                        menu.menu_event(MenuEvent::Activate(self.quick_completions));
+
+                        if self.quick_completions && menu.can_quick_complete() {
+                            menu.update_values(
+                                &mut self.editor,
+                                self.completer.as_mut(),
+                                self.history.as_ref(),
+                            );
+
+                            if menu.get_values().len() == 1 {
+                                return self.handle_editor_event(prompt, ReedlineEvent::MenuSelect);
+                            }
+                        }
+
+                        if self.partial_completions
+                            && menu.can_partially_complete(
+                                self.quick_completions,
+                                &mut self.editor,
+                                self.completer.as_mut(),
+                                self.history.as_ref(),
+                            )
+                        {
+                            return Ok(EventStatus::Handled);
+                        }
+
+                        return Ok(EventStatus::Handled);
                     }
                 }
-                if self.partial_completions {
-                    menu.can_partially_complete(
-                        self.quick_completions,
-                        &mut self.editor,
-                        self.completer.as_mut(),
-                        self.history.as_ref(),
-                    );
-                }
-                Ok(EventStatus::Handled)
+                Ok(EventStatus::Inapplicable)
             }
             ReedlineEvent::MenuSelect => {
                 let Some(menu) = self.menus.iter_mut().find(|m| m.is_active()) else {
@@ -1201,10 +1230,10 @@ impl Reedline {
                 };
                 menu.replace_in_buffer(&mut self.editor);
                 menu.menu_event(MenuEvent::Deactivate);
-                // If always_active_menu is set, the user expects the menu to
-                // immediately re-appear so they can keep drilling (e.g. browse
-                // the directory they just picked).
-                self.reactivate_always_active_menu();
+                // Refresh the ghost so the menu visually persists across picks
+                // (e.g. browse the directory the user just selected) — the
+                // menu's `is_active` stays false; only its values get updated.
+                self.refresh_ghost_menu();
                 Ok(EventStatus::Handled)
             }
             ReedlineEvent::MenuNext => {
@@ -1282,13 +1311,11 @@ impl Reedline {
                     if self.hints_active()
                         && self.editor.is_cursor_at_buffer_end()
                         && !current_hint.is_empty()
+                        && self.active_menu().is_none()
                     {
-                        // Route through Edit so an active menu sees the buffer
-                        // change and refreshes its values.
-                        return self.handle_editor_event(
-                            prompt,
-                            ReedlineEvent::Edit(vec![EditCommand::InsertString(current_hint)]),
-                        );
+                        self.run_edit_commands(&[EditCommand::InsertString(current_hint)]);
+                        self.refresh_ghost_menu();
+                        return Ok(EventStatus::Handled);
                     }
                 }
                 Ok(EventStatus::Inapplicable)
@@ -1299,11 +1326,11 @@ impl Reedline {
                     if self.hints_active()
                         && self.editor.is_cursor_at_buffer_end()
                         && !current_hint_part.is_empty()
+                        && self.active_menu().is_none()
                     {
-                        return self.handle_editor_event(
-                            prompt,
-                            ReedlineEvent::Edit(vec![EditCommand::InsertString(current_hint_part)]),
-                        );
+                        self.run_edit_commands(&[EditCommand::InsertString(current_hint_part)]);
+                        self.refresh_ghost_menu();
+                        return Ok(EventStatus::Handled);
                     }
                 }
                 Ok(EventStatus::Inapplicable)
@@ -1404,45 +1431,42 @@ impl Reedline {
                 && let Some(event) = self.try_expand_abbreviation_at_cursor(false) {
                     return self.handle_editor_event(prompt, event);
                 }
-                let Some(menu) = self.menus.iter_mut().find(|men| men.is_active()) else {
-                    self.reactivate_always_active_menu();
-                    return Ok(EventStatus::Handled)
-                };
-                if self.quick_completions && menu.can_quick_complete() {
-                    // Dismiss Tab-triggered quick menus on deletion edits, preserving upstream
-                    // behavior. When `always_active_menu` is set the user expects the menu to
-                    // stay pinned and refresh, so we skip the dismissal.
+                if let Some(menu) = self.menus.iter_mut().find(|men| men.is_active()) {
                     let is_delete = matches!(commands.first(), Some(
                         &EditCommand::Backspace
                         | &EditCommand::BackspaceWord
                         | &EditCommand::MoveToLineStart { select: false }
                     ));
-                    if is_delete && self.always_active_menu.is_none() {
-                        menu.menu_event(MenuEvent::Deactivate);
-                        return Ok(EventStatus::Handled)
+                    let quick = self.quick_completions && menu.can_quick_complete();
+                    if quick && !is_delete {
+                        menu.menu_event(MenuEvent::Edit(self.quick_completions));
+                        menu.update_values(
+                            &mut self.editor,
+                            self.completer.as_mut(),
+                            self.history.as_ref(),
+                        );
+                        let is_complete = matches!(commands.first(), Some(&EditCommand::Complete));
+                        if is_complete && menu.get_values().len() == 1 {
+                            return self.handle_editor_event(prompt, ReedlineEvent::MenuSelect)
+                        }
+                        if is_complete && self.partial_completions && menu.can_partially_complete(
+                            self.quick_completions, &mut self.editor, self.completer.as_mut(), self.history.as_ref(),
+                        ) {
+                            return Ok(EventStatus::Handled)
+                        }
                     }
-                    menu.menu_event(MenuEvent::Edit(self.quick_completions));
-                    menu.update_values(
-                        &mut self.editor,
-                        self.completer.as_mut(),
-                        self.history.as_ref(),
-                    );
-                    let is_complete = matches!(commands.first(), Some(&EditCommand::Complete));
-                    if is_complete && menu.get_values().len() == 1 {
-                        return self.handle_editor_event(prompt, ReedlineEvent::MenuSelect)
-                    }
-                    if is_complete && self.partial_completions && menu.can_partially_complete(
-                        self.quick_completions, &mut self.editor, self.completer.as_mut(), self.history.as_ref(),
-                    ) {
-                        return Ok(EventStatus::Handled)
-                    }
+                    // Deactivate on quick-complete delete (upstream behavior) or
+                    // when the buffer empties out. Otherwise let the menu refresh.
+                    // If we end up Deactivate'd, the ghost refresh below makes the
+                    // menu visually persist for the next paint cycle.
+                    let event = if self.editor.line_buffer().get_buffer().is_empty() || (quick && is_delete) {
+                        MenuEvent::Deactivate
+                    } else {
+                        MenuEvent::Edit(self.quick_completions)
+                    };
+                    menu.menu_event(event);
                 }
-                let event = if self.editor.line_buffer().get_buffer().is_empty() {
-                    MenuEvent::Deactivate
-                } else {
-                    MenuEvent::Edit(self.quick_completions)
-                };
-                menu.menu_event(event);
+                self.refresh_ghost_menu();
                 Ok(EventStatus::Handled)
             }
             ReedlineEvent::OpenEditor => self.open_editor().map(|_| EventStatus::Handled),
@@ -2149,24 +2173,33 @@ impl Reedline {
             &hint,
         );
 
-        // Updating the working details of the active menu
+        // Updating the working details of the active menu, or of the ghost
+        // menu (always_active_menu) when no menu is active.
+        let ghost_name = self.ghost_menu_name().map(str::to_owned);
         for menu in self.menus.iter_mut() {
-            if menu.is_active() {
-                lines.prompt_indicator = menu.indicator().to_owned().into();
-                // If the menu requires the cursor position, update it (ide menu)
-                let cursor_pos = lines.cursor_pos(self.painter.screen_width());
-                menu.set_cursor_pos(cursor_pos);
-
-                menu.update_working_details(
-                    &mut self.editor,
-                    self.completer.as_mut(),
-                    self.history.as_ref(),
-                    &self.painter,
-                );
+            let is_ghost = ghost_name.as_deref() == Some(menu.name());
+            if !menu.is_active() && !is_ghost {
+                continue;
             }
+            if menu.is_active() {
+                // The prompt's `|` indicator only appears for a truly active
+                // menu; the ghost leaves the prompt unchanged.
+                lines.prompt_indicator = menu.indicator().to_owned().into();
+            }
+            let cursor_pos = lines.cursor_pos(self.painter.screen_width());
+            menu.set_cursor_pos(cursor_pos);
+            menu.update_working_details(
+                &mut self.editor,
+                self.completer.as_mut(),
+                self.history.as_ref(),
+                &self.painter,
+            );
         }
 
-        let menu = self.menus.iter().find(|menu| menu.is_active());
+        let menu = self.menus.iter().find(|menu| menu.is_active()).or_else(|| {
+            let name = ghost_name.as_deref()?;
+            self.menus.iter().find(|m| m.name() == name)
+        });
 
         self.painter.repaint_buffer(
             prompt,
@@ -2283,18 +2316,21 @@ impl Reedline {
     fn submit_buffer(&mut self, prompt: &dyn Prompt) -> io::Result<EventStatus> {
         let buffer = self.editor.get_buffer().to_string();
         self.hide_hints = true;
-        // Tear down any active menu before the final repaint so its rendered
-        // lines are erased — otherwise (notably with `always_active_menu`) the
-        // menu stays drawn below the prompt and the command's stdout overprints
-        // it, producing garbled output like "hiome/spherinder/...".
+        // Tear down any active menu and suppress the ghost so the final paint
+        // erases the menu region — otherwise its rendered lines persist below
+        // the prompt and command stdout overprints them ("hiome/user/...").
         self.deactivate_menus();
+        self.submitting = true;
         // Additional repaint to show the content without hints etc.
-        if let Some(transient_prompt) = self.transient_prompt.take() {
-            self.repaint(transient_prompt.as_ref())?;
+        let result = if let Some(transient_prompt) = self.transient_prompt.take() {
+            let r = self.repaint(transient_prompt.as_ref());
             self.transient_prompt = Some(transient_prompt);
+            r
         } else {
-            self.repaint(prompt)?;
-        }
+            self.repaint(prompt)
+        };
+        self.submitting = false;
+        result?;
         if !buffer.is_empty() {
             let mut entry = HistoryItem::from_command_line(&buffer);
             entry.session_id = self.get_history_session_id();
