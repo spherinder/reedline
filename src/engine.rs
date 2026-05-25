@@ -1145,14 +1145,9 @@ impl Reedline {
         }
     }
 
-    /// Name of the menu that should currently render as a ghost (passive
-    /// preview, `is_active() == false`), or `None` if no ghost should appear.
-    /// Conditions: `always_active_menu` is set, no menu is active, the buffer
-    /// meets `always_active_menu_min_chars`, and we're not mid-submit.
-    fn ghost_menu(&self) -> Option<&str> {
-        // TODO this should partially borrow
-        // `&<submitting, menus, always_active_menu, always_active_menu_min_chars, editor> Reedline`
-        // using the wdanilo/borrow crate
+    /// Index in `self.menus` of the menu that should currently render as a
+    /// ghost, or `None` if no ghost should appear.
+    fn ghost_menu_idx(&self) -> Option<usize> {
         if self.submitting { return None }
         let name = self.always_active_menu.as_deref()?;
         if self.menus.iter().any(|m| m.is_active()) { return None }
@@ -1162,22 +1157,15 @@ impl Reedline {
         if min_chars > 0 {
             self.editor.line_buffer().get_buffer().chars().nth(min_chars - 1)?;
         }
-        Some(name)
+        self.menus.iter().position(|m| m.name() == name)
     }
-
     /// Refresh the ghost menu's values so the next paint reflects the current
     /// buffer. Does NOT activate the menu — it stays `is_active() == false`, so
     /// Enter still submits and the prompt indicator is unchanged.
     fn refresh_ghost_menu(&mut self) {
-        // TODO this should partially borrow `&<mut menus, *> Reedline`
-        // using wdanilo/borrow – then we don't need `str::to_owned`.
-        let Some(name) = self.ghost_menu().map(str::to_owned) else { return };
-        let Some(menu) = self.menus.iter_mut().find(|m| m.name() == name) else { return };
-        menu.update_values(
-            &mut self.editor,
-            self.completer.as_mut(),
-            self.history.as_ref(),
-        );
+        let Some(idx) = self.ghost_menu_idx() else { return };
+        let menu = &mut self.menus[idx];
+        menu.update_values(&mut self.editor, self.completer.as_mut(), self.history.as_ref());
         // Queue an Edit event so the painter's `update_working_details`
         // pass computes the menu's layout (column widths, cursor offset,
         // row count). Without an event, working_details stay at their
@@ -2179,9 +2167,10 @@ impl Reedline {
 
         // Updating the working details of the active menu, or of the ghost
         // menu (always_active_menu) when no menu is active.
-        let ghost_name = self.ghost_menu().map(str::to_owned);
-        for menu in self.menus.iter_mut() {
-            if !menu.is_active() && ghost_name.as_deref() != Some(menu.name()) { continue }
+        let menu_idx = self.menus.iter().position(|m| m.is_active())
+            .or_else(|| self.ghost_menu_idx());
+        if let Some(idx) = menu_idx {
+            let menu = &mut self.menus[idx];
             if menu.is_active() {
                 // The prompt's `|` indicator only appears for a truly active
                 // menu; the ghost leaves the prompt unchanged.
@@ -2196,12 +2185,7 @@ impl Reedline {
                 &self.painter,
             );
         }
-
-        let menu = self.menus.iter().find(|menu| menu.is_active()).or_else(|| {
-            let name = ghost_name.as_deref()?;
-            self.menus.iter().find(|m| m.name() == name)
-        });
-
+        let menu = menu_idx.map(|idx| &self.menus[idx]);
         self.painter.repaint_buffer(
             prompt,
             &lines,
