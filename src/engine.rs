@@ -1206,6 +1206,13 @@ impl Reedline {
                                 self.history.as_ref(),
                             )
                         {
+                            // Partial completion extended the buffer to the
+                            // common prefix; the user is back to typing, not
+                            // picking. Drop to ghost so the prompt indicator
+                            // matches that state and the menu refreshes
+                            // against the new buffer.
+                            menu.menu_event(MenuEvent::Deactivate);
+                            self.refresh_ghost_menu();
                             return Ok(EventStatus::Handled);
                         }
 
