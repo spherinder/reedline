@@ -89,6 +89,11 @@ pub struct ColumnarMenu {
     longest_suggestion: usize,
     /// String collected after the menu is activated
     input: Option<String>,
+    /// Whether the menu currently has an entry "selected" (highlighted). When
+    /// false (set by [`Menu::unselect`]), `index()` returns an unmatchable
+    /// sentinel so no row renders as selected. Re-armed by Activate and any
+    /// navigation event.
+    selected: bool,
 }
 
 impl Default for ColumnarMenu {
@@ -107,6 +112,7 @@ impl Default for ColumnarMenu {
             event: None,
             longest_suggestion: 0,
             input: None,
+            selected: true,
         }
     }
 }
@@ -293,8 +299,11 @@ impl ColumnarMenu {
         }
     }
 
-    /// Menu index based on column and row position
+    /// Menu index based on column and row position. Returns `usize::MAX` when
+    /// no entry is selected (ghost render), so the highlight check `index ==
+    /// self.index()` fails for every row.
     fn index(&self) -> usize {
+        if !self.selected { return usize::MAX }
         let index = match self.default_details.traversal_dir {
             TraversalDirection::Vertical => self.col_pos * self.get_rows() + self.row_pos,
             TraversalDirection::Horizontal => self.row_pos * self.get_used_cols() + self.col_pos,
@@ -538,15 +547,30 @@ impl Menu for ColumnarMenu {
     /// Selects what type of event happened with the menu
     fn menu_event(&mut self, event: MenuEvent) {
         match &event {
-            MenuEvent::Activate(_) => self.active = true,
+            MenuEvent::Activate(_) => {
+                self.active = true;
+                self.selected = true;
+            }
             MenuEvent::Deactivate => {
                 self.active = false;
                 self.input = None;
             }
-            _ => {}
+            MenuEvent::NextElement
+            | MenuEvent::PreviousElement
+            | MenuEvent::MoveUp
+            | MenuEvent::MoveDown
+            | MenuEvent::MoveLeft
+            | MenuEvent::MoveRight
+            | MenuEvent::NextPage
+            | MenuEvent::PreviousPage => self.selected = true,
+            MenuEvent::Edit(_) => {}
         }
 
         self.event = Some(event);
+    }
+
+    fn unselect(&mut self) {
+        self.selected = false;
     }
 
     /// Updates menu values

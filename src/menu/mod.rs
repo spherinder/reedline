@@ -149,6 +149,13 @@ pub trait Menu: Send {
     fn set_cursor_pos(&mut self, _pos: (u16, u16)) {
         // empty implementation to make it optional
     }
+
+    /// Clear the current selection so no entry is highlighted on the next
+    /// render. Used by the engine when a menu is rendered passively (as a
+    /// ghost) so it doesn't visually pin a stale selection. The next user
+    /// navigation (Activate, MoveUp, MoveDown, etc.) should re-arm selection.
+    /// Menus that always want a selection can leave the default no-op.
+    fn unselect(&mut self) {}
 }
 
 /// Struct to store configuration for a menu.
@@ -470,5 +477,9 @@ impl Menu for ReedlineMenu {
 
     fn set_cursor_pos(&mut self, pos: (u16, u16)) {
         self.as_mut().set_cursor_pos(pos);
+    }
+
+    fn unselect(&mut self) {
+        self.as_mut().unselect();
     }
 }

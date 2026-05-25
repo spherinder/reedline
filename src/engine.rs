@@ -2175,6 +2175,10 @@ impl Reedline {
                 // The prompt's `|` indicator only appears for a truly active
                 // menu; the ghost leaves the prompt unchanged.
                 lines.prompt_indicator = menu.indicator().to_owned().into();
+            } else {
+                // Ghost render: clear any stale selection so no row is
+                // highlighted. The next Activate or nav event re-arms it.
+                menu.unselect();
             }
             let cursor_pos = lines.cursor_pos(self.painter.screen_width());
             menu.set_cursor_pos(cursor_pos);
