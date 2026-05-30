@@ -1209,10 +1209,9 @@ impl Reedline {
                             // Partial completion extended the buffer to the
                             // common prefix; the user is back to typing, not
                             // picking. Drop to ghost so the prompt indicator
-                            // matches that state and the menu refreshes
-                            // against the new buffer.
+                            // matches that state (the repaint refreshes the
+                            // ghost against the new buffer).
                             menu.menu_event(MenuEvent::Deactivate);
-                            self.refresh_ghost_menu();
                             return Ok(EventStatus::Handled);
                         }
 
@@ -1227,10 +1226,6 @@ impl Reedline {
                 };
                 menu.replace_in_buffer(&mut self.editor);
                 menu.menu_event(MenuEvent::Deactivate);
-                // Refresh the ghost so the menu visually persists across picks
-                // (e.g. browse the directory the user just selected) — the
-                // menu's `is_active` stays false; only its values get updated.
-                self.refresh_ghost_menu();
                 Ok(EventStatus::Handled)
             }
             ReedlineEvent::MenuNext => {
@@ -1311,7 +1306,6 @@ impl Reedline {
                         && self.active_menu().is_none()
                     {
                         self.run_edit_commands(&[EditCommand::InsertString(current_hint)]);
-                        self.refresh_ghost_menu();
                         return Ok(EventStatus::Handled);
                     }
                 }
@@ -1326,7 +1320,6 @@ impl Reedline {
                         && self.active_menu().is_none()
                     {
                         self.run_edit_commands(&[EditCommand::InsertString(current_hint_part)]);
-                        self.refresh_ghost_menu();
                         return Ok(EventStatus::Handled);
                     }
                 }
@@ -1429,7 +1422,6 @@ impl Reedline {
                     return self.handle_editor_event(prompt, event);
                 }
                 let Some(menu) = self.menus.iter_mut().find(|men| men.is_active()) else {
-                    self.refresh_ghost_menu();
                     return Ok(EventStatus::Handled)
                 };
                 let is_delete = matches!(commands.first(), Some(
@@ -1457,15 +1449,14 @@ impl Reedline {
                 }
                 // Deactivate on quick-complete delete (upstream behavior) or
                 // when the buffer empties out. Otherwise let the menu refresh.
-                // If we end up Deactivate'd, the ghost refresh below makes the
-                // menu visually persist for the next paint cycle.
+                // If we end up Deactivate'd, the repaint's ghost refresh makes
+                // the menu visually persist for the next paint cycle.
                 let event = if self.editor.line_buffer().get_buffer().is_empty() || (quick && is_delete) {
                     MenuEvent::Deactivate
                 } else {
                     MenuEvent::Edit(self.quick_completions)
                 };
                 menu.menu_event(event);
-                self.refresh_ghost_menu();
                 Ok(EventStatus::Handled)
             }
             ReedlineEvent::OpenEditor => self.open_editor().map(|_| EventStatus::Handled),
@@ -2124,6 +2115,15 @@ impl Reedline {
     ///
     /// Includes the highlighting and hinting calls.
     fn buffer_paint(&mut self, prompt: &dyn Prompt) -> Result<()> {
+        // Keep the passive ghost menu in sync with the current buffer and
+        // cursor on every repaint. Since every handled event funnels through a
+        // repaint, this is the single place the ghost needs refreshing — edits,
+        // cursor moves, history navigation and mouse clicks are all covered,
+        // so individual handlers don't refresh it themselves. No-op when no
+        // ghost should show (no `always_active_menu`, a menu is active, or
+        // submitting).
+        self.refresh_ghost_menu();
+
         let cursor_position_in_buffer = self.editor.insertion_point();
         let buffer_to_paint = self.editor.get_buffer();
 
